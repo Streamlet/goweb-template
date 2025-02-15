@@ -3,60 +3,46 @@ package main
 import (
 	"context"
 	"flag"
+	"goweb/common/webframe"
+	"goweb/handler"
+	"goweb/setup"
+	"log"
+	"os"
+
+	"github.com/BurntSushi/toml"
 	"github.com/Streamlet/gohttp"
 	"github.com/Streamlet/gosql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
-	"goweb-template/common/webframe"
-	"log"
-	"os"
 )
 
-type commandLineArgs struct {
-	sock      string
-	port      uint
-	log       string
-	redisAddr string
-	redisDb   int
-	mysqlAddr string
-	mysqlUser string
-	mysqlDb   string
+type config struct {
+	Log   string      `toml:"log"`
+	Mysql mysqlConfig `toml:"mysql"`
+	Redis redisConfig `toml:"redis"`
+	Http  httpConfig  `toml:"http"`
 }
 
-func parseArgs() commandLineArgs {
-	var args commandLineArgs
-	flag.StringVar(&args.sock, "sock", "", "unix sock file")
-	flag.UintVar(&args.port, "port", 80, "listen port")
-	flag.StringVar(&args.log, "log", "", "log file")
-	flag.StringVar(&args.redisAddr, "redis-addr", "localhost:6379", "redis address")
-	flag.IntVar(&args.redisDb, "redis-db", 0, "redis database")
-	flag.StringVar(&args.mysqlAddr, "mysql-addr", "localhost:3306", "mysql address")
-	flag.StringVar(&args.mysqlUser, "mysql-user", "root", "mysql user")
-	flag.StringVar(&args.mysqlDb, "mysql-db", "", "mysql database")
-	flag.Parse()
-	return args
+type httpConfig struct {
+	Unix string `toml:"unix"`
+	Tcp  string `toml:"tcp"`
 }
 
-func checkArgs(args commandLineArgs) bool {
-	if args.sock == "" && args.port == 0 {
-		log.Println("Either sock or port must be specified.")
-		return false
-	}
-	if args.redisAddr == "" {
-		log.Println("redis address must be specified.")
-		return false
-	}
-	if args.mysqlAddr == "" || args.mysqlUser == "" || args.mysqlDb == "" {
-		log.Println("mysql address, user and database must be specified.")
-		return false
-	}
-	return true
+type mysqlConfig struct {
+	Address  string `toml:"address"`
+	Db       string `toml:"db"`
+	User     string `toml:"user"`
+	Password string `toml:"password"`
+}
+
+type redisConfig struct {
+	Address  string `toml:"address"`
+	Db       int    `toml:"db"`
+	User     string `toml:"user"`
+	Password string `toml:"password"`
 }
 
 func initLog(logFile string) {
-	if logFile == "" {
-		return
-	}
 	f, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.ModePerm)
 	if err != nil {
 		log.Println("failed to open log file", logFile)
@@ -65,10 +51,25 @@ func initLog(logFile string) {
 	log.SetOutput(f)
 }
 
-func connectRedis(addr string, db int) *redis.Client {
+func connectMysql(address, db, user, password string) *gosql.Connection {
+	userPassword := user
+	if password != "" {
+		userPassword += ":" + password
+	}
+	c, err := gosql.Connect("mysql", userPassword+"@tcp("+address+")/"+db+"?charset=latin1&loc=Local&parseTime=True&clientFoundRows=true")
+	if err != nil {
+		log.Print("failed to connect to db: ", err.Error())
+		return nil
+	}
+	return c
+}
+
+func connectRedis(address string, db int, user, password string) *redis.Client {
 	rc := redis.NewClient(&redis.Options{
-		Addr: addr,
-		DB:   db,
+		Addr:     address,
+		DB:       db,
+		Username: user,
+		Password: password,
 	})
 	_, err := rc.Ping(context.Background()).Result()
 	if err != nil {
@@ -79,38 +80,81 @@ func connectRedis(addr string, db int) *redis.Client {
 	return rc
 }
 
-func connectMysql(mysqlAddr, mysqlUser, mysqlDb string) *gosql.Connection {
-	db, err := gosql.Connect("mysql", mysqlUser+"@tcp("+mysqlAddr+")/"+mysqlDb+"?charset=latin1&loc=Local&parseTime=True")
-	if err != nil {
-		log.Print("failed to connect to db: ", err.Error())
-		return nil
-	}
-	return db
+type commandLineArgs struct {
+	setup   bool
+	config  string
+	webroot string
+	debug   bool
+}
+
+func parseArgs() commandLineArgs {
+	var args commandLineArgs
+	flag.StringVar(&args.config, "config", "config.toml", "config file")
+	flag.BoolVar(&args.setup, "setup", false, "setup the system")
+	flag.StringVar(&args.webroot, "webroot", "", "web root for debug")
+	flag.BoolVar(&args.debug, "debug", false, "debug mode, showing detail error message")
+	flag.Parse()
+	return args
 }
 
 func main() {
 	args := parseArgs()
-	if !checkArgs(args) {
+	if args.config == "" {
+		log.Println("Usage: metaccount --config <config file> [--setup]")
 		return
 	}
 
-	initLog(args.log)
+	conf := config{
+		Http: httpConfig{
+			Tcp: ":8080",
+		},
+		Mysql: mysqlConfig{
+			Address: "localhost:3306",
+			Db:      "test",
+			User:    "root",
+		},
+		Redis: redisConfig{
+			Address: "localhost:6379",
+			Db:      0,
+		},
+	}
+	if args.config != "" {
+		if _, err := toml.DecodeFile(args.config, &conf); err != nil {
+			log.Println("Failed to parse config file:", err.Error())
+			return
+		}
+	}
 
-	rc := connectRedis(args.redisAddr, args.redisDb)
-	if rc == nil {
+	if conf.Log != "" {
+		initLog(conf.Log)
+	}
+
+	if args.setup {
+		db := connectMysql(conf.Mysql.Address, "", conf.Mysql.User, conf.Mysql.Password)
+		if db == nil {
+			return
+		}
+
+		setup.InteractiveSetup(db, conf.Mysql.Db)
 		return
 	}
 
-	db := connectMysql(args.mysqlAddr, args.mysqlUser, args.mysqlDb)
+	db := connectMysql(conf.Mysql.Address, conf.Mysql.Db, conf.Mysql.User, conf.Mysql.Password)
 	if db == nil {
 		return
 	}
 
-	application := gohttp.NewApplication[webframe.HttpContext](webframe.NewContextFactory(rc, db))
-	registerHandlers(application)
-	if args.sock != "" {
-		application.ServeSock(args.sock)
+	rc := connectRedis(conf.Redis.Address, conf.Redis.Db, conf.Redis.User, conf.Redis.Password)
+	if rc == nil {
+		return
+	}
+
+	application := gohttp.NewApplication[webframe.HttpContext](webframe.NewContextFactory(rc, db, args.debug))
+	handler.Registers(application, args.webroot)
+
+	if conf.Http.Unix != "" {
+		application.ServeUnix(conf.Http.Unix)
 	} else {
-		application.ServePort(args.port)
+		application.ServeTcp(conf.Http.Tcp)
 	}
 }

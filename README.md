@@ -1,4 +1,4 @@
-# goweb-template
+# goweb
 
 A template for golang-written web service
 

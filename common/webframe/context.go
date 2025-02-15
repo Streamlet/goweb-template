@@ -1,25 +1,30 @@
 package webframe
 
 import (
+	"net/http"
+
 	"github.com/Streamlet/gohttp"
 	"github.com/Streamlet/gosql"
 	"github.com/redis/go-redis/v9"
-	"net/http"
 )
 
-func NewContextFactory(cache *redis.Client, db *gosql.Connection) gohttp.ContextFactory[HttpContext] {
-	return &contextFactory{gohttp.NewSessionManager(NewSessionProvider(cache, "SESSION_")), cache, db}
+func NewContextFactory(cache *redis.Client, db *gosql.Connection, debug bool) gohttp.ContextFactory[HttpContext] {
+	return &contextFactory{gohttp.NewSessionManager(NewSessionProvider(cache, "SESSION_")), cache, db, debug}
 }
 
 type contextFactory struct {
 	sm    gohttp.SessionManager
 	cache *redis.Client
 	db    *gosql.Connection
+	debug bool
 }
 
 func (cf *contextFactory) NewContext(w http.ResponseWriter, r *http.Request) HttpContext {
 	return &httpContext{
-		gohttp.NewHttpContext(w, r, cf.sm), cf.cache, cf.db,
+		HttpContext: gohttp.NewHttpContext(w, r, cf.sm),
+		cache:       cf.cache,
+		db:          cf.db,
+		debug:       cf.debug,
 	}
 }
 
@@ -35,6 +40,7 @@ type httpContext struct {
 	gohttp.HttpContext
 	cache *redis.Client
 	db    *gosql.Connection
+	debug bool
 }
 
 const (
@@ -53,7 +59,11 @@ func (c *httpContext) Success(data interface{}) {
 }
 
 func (c *httpContext) Error(errorCode int, errorMessage string) {
-	c.Json(response{false, errorCode, nil, errorMessage})
+	if c.debug {
+		c.Json(response{false, errorCode, nil, errorMessage})
+	} else {
+		c.Json(response{false, errorCode, nil, ""})
+	}
 }
 
 func (c *httpContext) Cache() *redis.Client {
@@ -61,5 +71,5 @@ func (c *httpContext) Cache() *redis.Client {
 }
 
 func (c *httpContext) DB() *gosql.Connection {
-	return c.db
+	return c.db.Clone()
 }

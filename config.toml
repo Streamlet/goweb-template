@@ -1,0 +1,17 @@
+# log = "/var/log/metaccount.log"
+
+[http]
+tcp = ":8080"
+# unix = "/run/goweb.sock"
+
+[mysql]
+address = "localhost:3306"
+db = "test"
+user = "root"
+# password = ""
+
+[redis]
+address = "localhost:6379"
+db = 0
+# user = ""
+# password = ""

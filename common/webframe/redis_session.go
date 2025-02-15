@@ -2,9 +2,10 @@ package webframe
 
 import (
 	"context"
+	"time"
+
 	"github.com/Streamlet/gohttp"
 	"github.com/redis/go-redis/v9"
-	"time"
 )
 
 func NewSessionProvider(client *redis.Client, sessionKeyPrefix string) gohttp.CacheProvider {
@@ -33,11 +34,11 @@ func (rc *redisCache) HExists(key, field string) bool {
 }
 
 func (rc *redisCache) HGet(key, field string) interface{} {
-	if r, err := rc.client.HGet(context.Background(), rc.sessionKeyPrefix+key, field).Result(); err == nil {
-		return r
-	} else {
+	s, err := rc.client.HGet(context.Background(), rc.sessionKeyPrefix+key, field).Result()
+	if err != nil {
 		return nil
 	}
+	return s
 }
 
 func (rc *redisCache) HSet(key, field string, value interface{}, expiration time.Duration) {
@@ -46,9 +47,7 @@ func (rc *redisCache) HSet(key, field string, value interface{}, expiration time
 	}
 
 	if expiration > 0 {
-		if r, err := rc.client.Expire(context.Background(), rc.sessionKeyPrefix+key, expiration).Result(); err != nil || !r {
-			return
-		}
+		_, _ = rc.client.HExpire(context.Background(), rc.sessionKeyPrefix+key, expiration, field).Result()
 	}
 }
 
